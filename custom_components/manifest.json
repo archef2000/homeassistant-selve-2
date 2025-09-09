@@ -1,0 +1,16 @@
+{
+  "codeowners": [
+    "@archef2000"
+  ],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/archef2000/selve-home2",
+  "domain": "selve",
+  "iot_class": "local_polling",
+  "name": "Selve Home Server 2",
+  "brand": "Selve",
+  "requirements": [
+    "ftfy==6.2.3"
+  ],
+  "version": "1.0.0"
+}

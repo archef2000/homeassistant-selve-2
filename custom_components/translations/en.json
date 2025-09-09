@@ -1,0 +1,27 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Selve Home Server 2",
+        "description": "Enter connection info",
+        "data": {
+          "host": "Host (ip or hostname)",
+          "password": "Password"
+        }
+      },
+      "name": {
+        "title": "Server Name",
+        "description": "Provide a name for your server (suggested: {suggestion})",
+        "data": {
+          "server_name": "Server Name"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect"
+    },
+    "abort": {
+      "already_configured": "Server already configured"
+    }
+  }
+}

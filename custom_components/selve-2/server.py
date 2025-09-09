@@ -244,8 +244,10 @@ class CommeoReceiverState:
     @classmethod
     def _parse_state(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """Parse the state data from the API response."""
-        parsed_flags = self._parse_flags(int(state["flags"], 10))
-        state["attributes"] = parsed_flags
+        flags = state["flags"]
+        if (flags != "-"):
+            parsed_flags = self._parse_flags(int(flags, 10))
+            state["attributes"] = parsed_flags
         # del state["flags"]
         return state
 

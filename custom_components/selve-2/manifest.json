@@ -4,7 +4,7 @@
   ],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/archef2000/selve-home2",
+  "documentation": "https://github.com/archef2000/homeassistant-selve-2",
   "domain": "selve",
   "iot_class": "local_polling",
   "name": "Selve Home Server 2",

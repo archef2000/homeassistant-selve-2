@@ -13,7 +13,8 @@
         "title": "Server Name",
         "description": "Provide a name for your server (suggested: {suggestion})",
         "data": {
-          "server_name": "Server Name"
+          "server_name": "Server Name",
+          "disable_polling": "Disable polling of state after startup (use UDP updates only)"
         }
       }
     },
@@ -22,6 +23,17 @@
     },
     "abort": {
       "already_configured": "Server already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Selve Options",
+        "description": "Control API polling behavior",
+        "data": {
+          "disable_polling": "Disable polling of state after startup (use UDP updates only)"
+        }
+      }
     }
   }
 }

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any, cast
 
 from homeassistant import core
 from homeassistant.config_entries import ConfigEntry
@@ -6,6 +7,7 @@ from homeassistant.const import CONF_HOST, CONF_PASSWORD
 from homeassistant.helpers.device_registry import DeviceEntryType
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.typing import ConfigType
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from datetime import timedelta
 from time import monotonic
@@ -22,6 +24,7 @@ from .const import (
     DATA_SERVER_INFO,
     DATA_DEVICES,
     CONF_NAME,
+    CONF_DISABLE_POLLING,
     DEFAULT_UPDATE_INTERVAL,
     PLATFORMS,
     MULTICAST_GROUP,
@@ -29,56 +32,47 @@ from .const import (
 )
 
 from .server import (
+    ETYPE_LABELS,
     SeleveHomeServer,
-    CommeoReceiverState,
-    CommeoSensorState,
-    IveoReceiverState,
-    DeviceGroupState,
+    DataStoreDict,
+    SelveRawCommeoDeviceState,
+    SelveStates,
+    parseCommeoRawFlags,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-DeviceState = (
-    CommeoReceiverState | CommeoSensorState | IveoReceiverState | DeviceGroupState
-)
 
-
-async def async_setup(hass: core.HomeAssistant, config: dict) -> bool:
+async def async_setup(_hass: core.HomeAssistant, _config: ConfigType) -> bool:
     """Set up integration."""
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Selve Home Server 2 from a config entry."""
-    host: str = entry.data[CONF_HOST]
-    password: str = entry.data[CONF_PASSWORD]
+    host: str = cast(str, entry.data[CONF_HOST])
+    password: str = cast(str, entry.data[CONF_PASSWORD])
     custom_server_name: str | None = entry.data.get(CONF_NAME)
 
+    disable_polling: bool = cast(bool, entry.options.get(CONF_DISABLE_POLLING, False))
     api = SeleveHomeServer(host, password)
-    # Fetch server info synchronously in executor (requests library is blocking)
     server_info = await hass.async_add_executor_job(api.get_server_info)
     states = await hass.async_add_executor_job(api.get_states)
+    if states is None:
+        raise UpdateFailed("No data received from Selve Home Server")
 
-    # Prepare store early so update method can access udp_last during first refresh
-    store: dict = {
-        DATA_API: api,
-        DATA_SERVER_INFO: server_info,
-        DATA_DEVICES: states,
-        "udp_last": {},
-    }
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = store
-
-    async def async_update_data() -> dict[str, DeviceState]:
+    async def async_update_data() -> SelveStates:
         try:
             new_states = await hass.async_add_executor_job(api.get_states)
+            if new_states is None:
+                raise UpdateFailed("No data received from Selve Home Server")
         except Exception as err:
             raise UpdateFailed(str(err)) from err
 
-        # Compare API state vs last UDP state and prefer recent UDP for UI
-        udp_last: dict = store.get("udp_last", {})
+        udp_last = store.get("udp_last", {})
         now = monotonic()
         for sid, dev in new_states.items():
-            if not hasattr(dev, "state") or not isinstance(dev.state, dict):
+            if "state" not in dev or not isinstance(dev["state"], dict):
                 continue
             udp_entry = udp_last.get(sid)
             if not udp_entry:
@@ -86,11 +80,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             udp_state = udp_entry.get("state", {})
             ts = udp_entry.get("ts", 0)
             for k, udp_val in udp_state.items():
-                api_val = dev.state.get(k)
+                api_val = dev["state"].get(k)
                 if api_val != udp_val:
                     # If UDP is recent, silently prefer it; otherwise, warn about mismatch
                     if now - ts <= 20:
-                        dev.state[k] = udp_val
+                        dev["state"][k] = udp_val
                     else:
                         _LOGGER.warning(
                             "Selve API mismatch for %s.%s: poll=%s udp=%s",
@@ -101,35 +95,61 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         )
         return new_states
 
-    coordinator = DataUpdateCoordinator(
-        hass,
-        _LOGGER,
-        name=f"Selve Home Server {host}",
-        update_method=async_update_data,
-        update_interval=timedelta(seconds=DEFAULT_UPDATE_INTERVAL),
-    )
-    await coordinator.async_config_entry_first_refresh()
+    coordinator: DataUpdateCoordinator[SelveStates]
 
-    store["coordinator"] = coordinator
+    if disable_polling:
+
+        async def _return_states() -> SelveStates:
+            return states
+
+        coordinator = DataUpdateCoordinator[SelveStates](
+            hass,
+            _LOGGER,
+            name=f"Selve Home Server {host}",
+            update_method=_return_states,
+            update_interval=None,
+        )
+    else:
+        coordinator = DataUpdateCoordinator[SelveStates](
+            hass,
+            _LOGGER,
+            name=f"Selve Home Server {host}",
+            update_method=async_update_data,
+            update_interval=timedelta(seconds=DEFAULT_UPDATE_INTERVAL),
+        )
+    coordinator.logger.debug("Polling is enabled: %s", not disable_polling)
+    store: DataStoreDict = {
+        DATA_API: api,
+        DATA_SERVER_INFO: server_info,
+        DATA_DEVICES: states,
+        "udp_last": {},
+        "coordinator": coordinator,
+        "udp_task": None,
+    }
+
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = store
+
+    await coordinator.async_config_entry_first_refresh()
 
     dev_reg = dr.async_get(hass)
     # Create main server device
-    dev_reg.async_get_or_create(
+    _ = dev_reg.async_get_or_create(
         config_entry_id=entry.entry_id,
-        identifiers={(DOMAIN, f"server_{server_info.mac}")},
+        identifiers={(DOMAIN, f"server_{server_info['mac']}")},
         manufacturer="Selve",
         name=custom_server_name or f"Selve Home Server ({host})",
-        model=f"Home Server 2 ({server_info.mhv})",
-        sw_version=server_info.mfv,
+        model=f"Home Server 2 ({server_info['mhv']})",
+        sw_version=server_info["mhv"],
         entry_type=DeviceEntryType.SERVICE,
     )
 
     for sid, device in states.items():
         # Determine model based on device class
-        if device.__class__.__name__ == "CommeoReceiverState":
-            model = f"Commeo {device.eType}".strip()
-        elif device.__class__.__name__ == "CommeoSensorState":
-            model = "Commeo Sensor"
+        if device["type"] == "CM":
+            if device["deviceType"] == "00":
+                model = f"Commeo {ETYPE_LABELS[device['eType']]}".strip()
+            else:
+                model = "Commeo Sensor"
         elif device.__class__.__name__ == "IveoReceiverState":
             model = "Iveo Receiver"
         elif device.__class__.__name__ == "DeviceGroupState":
@@ -137,54 +157,58 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         else:
             model = "Unknown"
 
-        dev_reg.async_get_or_create(
+        _ = dev_reg.async_get_or_create(
             config_entry_id=entry.entry_id,
             identifiers={(DOMAIN, f"{sid}")},
             manufacturer="Selve",
-            name=device.name,
+            name=device.get("name") or f"Device {sid}",
             model=model,
-            via_device=(DOMAIN, f"server_{server_info.mac}"),
+            via_device=(DOMAIN, f"server_{server_info['mac']}"),
         )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     async def _udp_listener():
         loop = asyncio.get_running_loop()
-        sock = socket.socket(
-            socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         try:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         except OSError:
             pass
         sock.bind(("0.0.0.0", MULTICAST_PORT))
-        mreq = struct.pack("=4sl", socket.inet_aton(
-            MULTICAST_GROUP), socket.INADDR_ANY)
+        mreq = struct.pack("=4sl", socket.inet_aton(MULTICAST_GROUP), socket.INADDR_ANY)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
         sock.setblocking(False)
 
         while True:
+            _LOGGER.warning("UDP wait")
             try:
-                data, addr = await loop.sock_recvfrom(sock, 65535)
+                data, addr = await loop.sock_recvfrom(sock, 65535)  # pyright: ignore[reportAny]
             except asyncio.CancelledError:
+                _LOGGER.error("UDP listener cancelled")
                 break
             except Exception as err:
-                _LOGGER.debug("UDP recv error: %s", err)
+                _LOGGER.error("UDP recv error: %s", err)
                 await asyncio.sleep(0.1)
                 continue
 
             msg = data.decode("utf-8", errors="replace").strip()
             if not (msg.startswith("STA:") or msg.startswith("EVT:")):
-                _LOGGER.warning("Selve UDP: unexpected prefix: %s", msg[:16])
+                _LOGGER.warning(
+                    "Selve UDP: unexpected prefix: addr=%s msg=%s",
+                    addr,  # pyright: ignore[reportAny]
+                    msg,
+                )
                 continue
+            _LOGGER.error("Selve UDP: %s", msg)
             payload = msg[4:]
             try:
-                j = json.loads(payload)
+                j = cast(dict[str, Any], json.loads(payload))  # pyright: ignore[reportExplicitAny]
             except Exception as err:
-                _LOGGER.warning(
-                    "Selve UDP: invalid JSON: %s (%s)", payload[:200], err)
+                _LOGGER.warning("Selve UDP: invalid JSON: %s (%s)", payload[:200], err)
                 continue
 
-            sid = j.get("sid")
+            sid = cast(str, j.get("sid"))
             if not sid:
                 continue
             dev = coordinator.data.get(sid)
@@ -193,26 +217,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
             udp_state = j.get("state") or {}
             # Normalize flags -> attributes for Commeo receivers so binary_sensors update from UDP
-            if isinstance(dev, CommeoReceiverState) and "flags" in udp_state:
+            if dev["type"] == "CM":
                 try:
-                    raw = udp_state.get("flags")
-                    flags_int = int(raw, 10) if isinstance(
-                        raw, str) else int(raw)
-                    attrs = CommeoReceiverState._parse_flags(flags_int)
-                    # Merge into attributes map
-                    existing_attrs = (dev.state.get("attributes") if isinstance(
-                        dev.state, dict) else {}) or {}
-                    merged = {**existing_attrs, **attrs}
-                    udp_state["attributes"] = merged
-                    # Remove raw flags field after parsing
-                    udp_state.pop("flags", None)
+                    parsed_falgs = parseCommeoRawFlags(
+                        cast(SelveRawCommeoDeviceState, udp_state)
+                    )
+                    udp_state["parsed_flags"] = parsed_falgs
                 except Exception:
-                    pass
-            if hasattr(dev, "state") and isinstance(dev.state, dict):
-                dev.state.update(udp_state)
+                    coordinator.logger.error(
+                        "Error parsing Commeo flags from UDP for device %s udp_state %s",
+                        dev,
+                        udp_state,
+                    )
+            if "state" in dev and isinstance(dev["state"], dict):
+                dev["state"].update(udp_state)
                 coordinator.data[sid] = dev
-                store["udp_last"][sid] = {
-                    "state": udp_state, "ts": monotonic()}
+                store["udp_last"][sid] = {"state": udp_state, "ts": monotonic()}
                 # Notify entities
                 coordinator.async_set_updated_data(coordinator.data)
 
@@ -222,15 +242,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    entry_store = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    entry_store = cast(dict[str, DataStoreDict], hass.data.get(DOMAIN, {})).get(
+        entry.entry_id
+    )
     # Cancel UDP listener
     udp_task = entry_store.get("udp_task") if entry_store else None
     if udp_task:
-        udp_task.cancel()
+        _ = udp_task.cancel()
         with contextlib.suppress(Exception):
             await udp_task
 
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
-        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        domain_store = cast(dict[str, object], hass.data.get(DOMAIN, {}))
+        _ = domain_store.pop(entry.entry_id, None)
     return unload_ok

@@ -1,10 +1,12 @@
+from asyncio import Task
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 import requests
-from dataclasses import dataclass
-from typing import Dict, Any, Optional
+from typing import Any, Literal, TypeAlias, TypedDict, cast
 from enum import IntEnum
 import base64
 import logging
 from ftfy import fix_encoding
+
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -22,6 +24,7 @@ def fix_mojibake(name: str) -> str:
 
 class CommeoEType(IntEnum):
     """Numeric Commeo receiver/switch/motor type codes."""
+
     BLIND_INSIDE = 0
     BLIND_OUTSIDE = 1
     AWNING_INSIDE = 2
@@ -40,7 +43,7 @@ class CommeoEType(IntEnum):
     # 22..31: Unknown Switch type
 
 
-ETYPE_LABELS: Dict[int, str] = {
+ETYPE_LABELS: dict[int, str] = {
     0: "Inside Blind",
     1: "Outside Blind",
     2: "Inside Awning",
@@ -58,7 +61,7 @@ ETYPE_LABELS: Dict[int, str] = {
 }
 
 
-def label_for_e_type(code: Optional[int]) -> Optional[str]:
+def label_for_e_type(code: int | None) -> str | None:
     if code is None:
         return None
     if code in ETYPE_LABELS:
@@ -70,21 +73,7 @@ def label_for_e_type(code: Optional[int]) -> Optional[str]:
     return "Unknown"
 
 
-def parse_e_type(data: Dict[str, Any]) -> Dict[str, Any]:
-    raw = data.get("eType")
-    if raw is None:
-        return data
-    try:
-        code = int(raw)
-    except (ValueError, TypeError):
-        code = None
-    data["eType_code"] = code
-    data["eType"] = label_for_e_type(code)
-    return data
-
-
-@dataclass
-class ServerInfo:
+class ServerInfo(TypedDict):
     """Represents the server information returned by the SELVE-Home system."""
 
     name: str
@@ -159,113 +148,6 @@ class ServerInfo:
     rssi: int
     """WiFi signal strength in dBm (negative number, closer to 0 is stronger)"""
 
-    @classmethod
-    def from_response(cls, data: Dict[str, Any]) -> "ServerInfo":
-        """Create a ServerInfo instance from the API response."""
-        data["name"] = fix_mojibake(data.get("name", ""))
-        return cls(**data)
-
-
-class CommeoDeviceType(IntEnum):
-    """Enum representing the types of Commeo devices."""
-    RECEIVER = 0
-    SENSOR = 1
-
-    @classmethod
-    def parse_data(cls, data: Dict[str, Any]) -> Dict[str, Any]:
-        if "deviceType" in data and data["deviceType"] is not None:
-            try:
-                data["deviceType"] = CommeoDeviceType(int(data["deviceType"]))
-            except (ValueError, TypeError):
-                # Handle unknown deviceType values
-                data["deviceType"] = None
-        return data
-
-
-@dataclass
-class CommeoReceiverState:
-    sid: str  # HEX
-    """The device id inside the gateway"""
-    adr: str  # HEX
-    """The RF address of the device"""
-    deviceType: CommeoDeviceType
-    """Device is either receiver or sensor. 00: Receiver or actuator and 01 for sensors"""
-    eType: str
-    """Human readable receiver type label (e.g. 'Inside Blind')."""
-    eType_code: int
-    """Original numeric eType code."""
-    cid: str  # HEX
-    """Commeo ID : The id of the device in CC. (not relevent for operations)"""
-    state: Dict[str, Any]
-    """"""
-    group: int  # HEX
-    """Group Sid. Only set if device is part of a group"""
-    name: str = ""
-    """Name of the device"""
-    type: str = "CM"
-
-    @classmethod
-    def _parse_flags(self, flags: int) -> Dict[str, Any]:
-        """Parse the flags from the state data with reversed bit order (endianness).
-
-        Bit mapping:
-        Bit 0: Timeout - 0: No time out, 1: timeout
-        Bit 1: Overload - 1: overload
-        Bit 2: Obstacle - 1: obstacle
-        Bit 3: Emergency alarm - 1: emergency alarm
-        Bit 4: Sensor learned - 0: no sensor learned, 1: Sensor is learned
-        Bit 5: Sensor lost - 0: sensor is connected, 1: sensor is lost
-        Bit 6: Mode - 0: manu, 1: automatic
-        Bit 7: Timeout - 1: device no longer is in CC
-        Bit 8: Wind alarm
-        Bit 9: Rain alarm
-        Bit 10: Frost alarm
-        Bit 11-15: Reserved
-        """
-        # Reverse the 16-bit bit order
-        flags16 = flags & 0xFFFF
-        rev_bits = int(f"{flags16:016b}"[::-1], 2)
-
-        parsed_flags = {
-            "timeout": bool(rev_bits & (1 << 0)),
-            "overload": bool(rev_bits & (1 << 1)),
-            "obstacle": bool(rev_bits & (1 << 2)),
-            "emergency_alarm": bool(rev_bits & (1 << 3)),
-            "sensor_learned": bool(rev_bits & (1 << 4)),
-            "sensor_connected": not bool(rev_bits & (1 << 5)),
-            "automatic_mode": bool(rev_bits & (1 << 6)),
-            "cc_timeout": bool(rev_bits & (1 << 7)),
-            "wind_alarm": bool(rev_bits & (1 << 8)),
-            "rain_alarm": bool(rev_bits & (1 << 9)),
-            "frost_alarm": bool(rev_bits & (1 << 10)),
-        }
-        return parsed_flags
-
-    @classmethod
-    def _parse_state(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse the state data from the API response."""
-        flags = state["flags"]
-        if (flags != "-"):
-            parsed_flags = self._parse_flags(int(flags, 10))
-            state["attributes"] = parsed_flags
-        # del state["flags"]
-        return state
-
-    @classmethod
-    def from_response(cls, data: Dict[str, Any]) -> "CommeoReceiverState":
-        """Create a CommeoReceiverState instance from the API response."""
-        # Convert eType from str/int to our enum
-        if (data["type"] != "CM"):
-            raise ValueError("Invalid type")
-        del data["type"]
-        data = parse_e_type(data)
-        data = CommeoDeviceType.parse_data(data)
-        if "group" in data and data["group"] is not None:
-            data["group"] = int(data["group"])
-        state = cls._parse_state(data["state"])
-        del data["state"]
-        return cls(state=state, **data)
-
 
 CammeoSwitchCommands = [
     "on",
@@ -288,10 +170,7 @@ CammeoMotorCommands = [
     "saveP2",
 ]
 
-IveoSwitchCommands = [
-    "on",
-    "off"
-]
+IveoSwitchCommands = ["on", "off"]
 
 IveoMotorCommands = [
     "moveUp",
@@ -307,115 +186,168 @@ IveoMotorCommands = [
 ]
 
 
-@dataclass
-class CommeoSensorState:
+class SelveCommeoDeviceFlags(TypedDict):
+    timeout: bool
+    overload: bool
+    obstacle: bool
+    emergency_alarm: bool
+    sensor_learned: bool
+    sensor_connected: bool
+    automatic_mode: bool
+    cc_timeout: bool
+    wind_alarm: bool
+    rain_alarm: bool
+    frost_alarm: bool
+
+
+class SelveRawCommeoDeviceState(TypedDict):
+    position: int | Literal["-"]
+    run_state: int
+    current: int
+    target: int
+    flags: str
+    timeout: int
+    parsed_flags: SelveCommeoDeviceFlags | None
+
+
+class SelveRawCommeoState(TypedDict):
+    type: Literal["CM"]
     sid: str  # HEX
+    """The device id inside the gateway"""
     adr: str  # HEX
-    deviceType: CommeoDeviceType
-    # eType: str ?
+    """The RF address of the device"""
     cid: str  # HEX
-    state: Dict[str, Any]
-    name: str = ""
-    """Name of the device"""
-    type: str = "CM"
-
-    @classmethod
-    def from_response(cls, data: Dict[str, Any]) -> "CommeoSensorState":
-        """Create a CommeoSensorState instance from the API response."""
-        if (data["type"] != "CM"):
-            raise ValueError("Invalid type")
-        del data["type"]
-        data = CommeoDeviceType.parse_data(data)
-        if "group" in data and data["group"] is not None:
-            data["group"] = int(data["group"])
-        return cls(**data)
-
-
-class DeviceGroupdDeviceType(IntEnum):
-    """Enum representing the types of Commeo devices."""
-    SWITCH = 1
-    MOTOR = 2
-
-    @classmethod
-    def parse_data(cls, data: Dict[str, Any]) -> Dict[str, Any]:
-        if "deviceType" in data and data["deviceType"] is not None:
-            try:
-                data["deviceType"] = DeviceGroupdDeviceType(
-                    int(data["deviceType"]))
-            except (ValueError, TypeError):
-                # Handle unknown deviceType values
-                data["deviceType"] = None
-        return data
-
-
-@dataclass
-class DeviceGroupState:
-    """Represents the groups state."""
+    """Commeo ID : The id of the device in CC. (not relevent for operations)"""
+    deviceType: str
+    """0: Receiver 1: Sensor"""
+    eType: str
     name: str
-    """Name of the group"""
+    state: SelveRawCommeoDeviceState
+    group: str  # HEX
+    """Group Sid. Only set if device is part of a group"""
+
+
+class SelveCommeoState(TypedDict):
+    type: Literal["CM"]
     sid: str  # HEX
-    """Group System ID"""
+    """The device id inside the gateway"""
     adr: str  # HEX
-    """Group Address"""
-    deviceType: DeviceGroupdDeviceType
-    sys: str
-    """CM: Commeo Group IV: Iveo Group"""
-    type: str = "SGROUP"
-
-    @classmethod
-    def from_response(cls, data: Dict[str, Any]) -> "DeviceGroupState":
-        """Create a DeviceGroupState instance from the API response.
-
-        Decodes base64 encoded group names.
-        """
-        if data.get("type") != "SGROUP":
-            raise ValueError("Invalid type")
-        data = dict(data)  # shallow copy
-        del data["type"]
-        data = DeviceGroupdDeviceType.parse_data(data)
-        # Decode base64 name if present
-        name_val = data.get("name")
-        if name_val:
-            try:
-                decoded = base64.b64decode(name_val).decode(
-                    "utf-8", errors="replace")
-                data["name"] = decoded
-            except Exception as err:
-                _LOGGER.debug(
-                    "Failed to decode group name '%s': %s", name_val, err)
-        return cls(**data)
+    """The RF address of the device"""
+    cid: str  # HEX
+    """Commeo ID : The id of the device in CC. (not relevent for operations)"""
+    deviceType: str
+    """0: Receiver 1: Sensor"""
+    eType: int
+    name: str
+    state: SelveRawCommeoDeviceState
+    group: str  # HEX
+    """Group Sid. Only set if device is part of a group"""
 
 
-@dataclass
-class IveoReceiverState:
-    """Represents an Iveo receiver device.
-
-    The API returns for Iveo receivers:
-    {"type":"IV", "sid":"04", "adr":"01", "config":"103,202", "state":"?"}
-    """
+class SelveIveoState(TypedDict):
+    type: Literal["IV"]
     sid: str
-    adr: str
+    adr: str  # HEX
+    """The RF address of the device"""
     config: str
-    state: str
-    type: str = "IV"
+    state: Literal["open", "closed"]
 
-    @classmethod
-    def from_response(cls, data: Dict[str, Any]) -> "IveoReceiverState":
-        if data.get("type") != "IV":
-            raise ValueError("Invalid type")
-        data = dict(data)
-        del data["type"]
-        return cls(**data)
+
+class SelveRawDeviceGroupState(TypedDict):
+    type: Literal["SGROUP"]
+    sid: str  # HEX
+    """The device id inside the gateway"""
+    adr: str  # HEX
+    """The RF address of the device"""
+    sys: Literal["CM", "IV"]
+    deviceType: str
+    name: str
+    "in base64"
+
+
+class SelveRawEventState(TypedDict):
+    type: Literal["EVENT"]
+    adr: str
+    state: str
+
+
+SelveRawState: TypeAlias = (
+    SelveRawCommeoState | SelveIveoState | SelveRawDeviceGroupState | SelveRawEventState
+)
+
+
+SelveRawStates: TypeAlias = list[SelveRawState]
+
+SelveState: TypeAlias = (
+    SelveCommeoState | SelveIveoState | SelveRawDeviceGroupState | SelveRawEventState
+)
+
+
+SelveStates: TypeAlias = dict[str, SelveState]
+
+
+def parseCommeoRawFlags(
+    raw_state: SelveRawCommeoDeviceState,
+) -> SelveCommeoDeviceFlags | None:
+    """Parse the flags from the state data with reversed bit order (endianness).
+    Bit mapping:
+    Bit 0: Timeout - 0: No time out, 1: timeout
+    Bit 1: Overload - 1: overload
+    Bit 2: Obstacle - 1: obstacle
+    Bit 3: Emergency alarm - 1: emergency alarm
+    Bit 4: Sensor learned - 0: no sensor learned, 1: Sensor is learned
+    Bit 5: Sensor lost - 0: sensor is connected, 1: sensor is lost
+    Bit 6: Mode - 0: manu, 1: automatic
+    Bit 7: Timeout - 1: device no longer is in CC
+    Bit 8: Wind alarm
+    Bit 9: Rain alarm
+    Bit 10: Frost alarm
+    Bit 11-15: Reserved
+    """
+    raw_flags = raw_state.get("flags", "-")
+    if raw_flags == "-":
+        return None
+    if len(raw_flags) != 4:
+        raise ValueError("Flags string must be 4 hex digits")
+    flags = int(raw_flags, 16)
+    parsed_flags: SelveCommeoDeviceFlags = {
+        "timeout": bool(flags & (1 << 0)),
+        "overload": bool(flags & (1 << 1)),
+        "obstacle": bool(flags & (1 << 2)),
+        "emergency_alarm": bool(flags & (1 << 3)),
+        "sensor_learned": bool(flags & (1 << 4)),
+        "sensor_connected": not bool(flags & (1 << 5)),
+        "automatic_mode": bool(flags & (1 << 6)),
+        "cc_timeout": bool(flags & (1 << 7)),
+        "wind_alarm": bool(flags & (1 << 8)),
+        "rain_alarm": bool(flags & (1 << 9)),
+        "frost_alarm": bool(flags & (1 << 10)),
+    }
+    return parsed_flags
+
+
+def parseCommeoRawState(raw_state: SelveRawCommeoState) -> SelveCommeoState:
+    eType = int(raw_state["eType"])
+    state: SelveCommeoState = {
+        **raw_state,
+        "name": fix_mojibake(raw_state.get("name")),
+        "eType": eType,
+        "state": {
+            **raw_state["state"],
+            "parsed_flags": parseCommeoRawFlags(raw_state["state"]),
+        },
+    }
+    return state
 
 
 class SeleveHomeServer:
-    def __init__(self, host, password):
+    def __init__(self, host: str, password: str):
         if not (host.startswith("https://") or host.startswith("http://")):
             host = f"http://{host}"
-        self.host = host
-        self.password = password
+        self.host: str = host
+        self.password: str = password
 
-    def request(self, method, path, data=None):
+    def request(self, method: str, path: str, data: Any | None = None):  # pyright: ignore[reportExplicitAny]
         url = f"{self.host}{path}"
         url += f"?auth={self.password}"
         response = requests.request(method, url, json=data)
@@ -424,22 +356,32 @@ class SeleveHomeServer:
     def get_server_info(self) -> ServerInfo:
         response = self.request("GET", "/info")
         if response.status_code == 200 and "XC_SUC" in response.json():
-            return ServerInfo.from_response(response.json()["XC_SUC"])
+            data = cast(ServerInfo, response.json()["XC_SUC"])
+            return {**data, "name": fix_mojibake(data.get("name", ""))}
         else:
             raise Exception(
-                f"Failed to get server info: {response.status_code} " f"{response.text}"
+                f"Failed to get server info: {response.status_code} {response.text}"
             )
 
-    def request_cmd(self, params: Dict[str, Any]):
+    def request_cmd(self, params: dict[str, str]):
         params["auth"] = self.password
         url = "/cmd?auth=" + self.password
         url += "&" + "&".join(f"{k}={v}" for k, v in params.items())
         response = self.request("GET", url)
-        if response.status_code == 200 and "XC_SUC" in response.json():
-            return response.json()["XC_SUC"]
-        else:
+        if response.status_code == 200:
+            if len(response.text) == 0:
+                raise Exception("Empty response")
+            try:
+                json_data = response.json()
+            except Exception as e:
+                _LOGGER.error(
+                    'Failed to parse response: %s response: "%s"', e, response.text
+                )
+                return None
+            if "XC_SUC" in json_data:
+                return json_data["XC_SUC"]
             raise Exception(
-                f"Failed to execute command: {response.status_code} " f"{response.text}"
+                f'Failed to execute command: {response.status_code} "{response.text}"'
             )
 
     def get_all(self):
@@ -447,41 +389,42 @@ class SeleveHomeServer:
 
     def get_states(self):
         """Get the states of all devices connected to the system."""
-        data = self.request_cmd({"XC_FNC": "GetStates", "config": "1"})
-        states = {}
+        data = cast(
+            SelveRawStates | None,
+            self.request_cmd({"XC_FNC": "GetStates", "config": "1"}),
+        )
+        if data is None:
+            return None
+        states: SelveStates = {}
         for state in data:
-            stateType = state["type"]
-            deviceType = state.get("deviceType", "")
-            if stateType == "CM":
-                if deviceType == "00":  # Commeo Receivers
-                    receiver = CommeoReceiverState.from_response(state)
-                    receiver.name = fix_mojibake(receiver.name)
-                    states[receiver.sid] = receiver
-                elif deviceType == "01":  # Commeo Sensors
-                    sensor = CommeoSensorState.from_response(state)
-                    sensor.name = fix_mojibake(sensor.name)
-                    states[sensor.sid] = sensor
-                else:
+            if state["type"] == "CM":
+                try:
+                    states[state["sid"]] = parseCommeoRawState(state)
+                except Exception as e:
                     _LOGGER.error(
-                        "Unknown Commeo deviceType: %s raw=%s", deviceType, state)
-            elif stateType == "IV":
-                iveo = IveoReceiverState.from_response(state)
-                states[iveo.sid] = iveo
-            elif stateType == "SGROUP":
-                group = DeviceGroupState.from_response(state)
-                group.name = fix_mojibake(group.name)
-                states[group.sid] = group
-            elif stateType == "EVENT":
+                        "Failed to parse Commeo state for sid %s: %s raw=%s",
+                        state["sid"],
+                        e,
+                        state,
+                    )
+            elif state["type"] == "IV":
+                states[state["sid"]] = state
+            elif state["type"] == "SGROUP":
+                state["name"] = (
+                    base64.b64decode(state["name"])
+                    .decode("utf-8", errors="replace")
+                    .strip()
+                )
+                states[state["sid"]] = state
+            elif state["type"] == "EVENT":
                 pass
             else:
-                _LOGGER.debug("Unknown state type: %s raw=%s",
-                              stateType, state)
+                _LOGGER.debug("Unknown state type: %s raw=%s", state["type"], state)
         return states
 
     def get_config(self, type: str, adr: str):
         """Get the configuration of a device by its RF address."""
-        data = self.request_cmd(
-            {"XC_FNC": "GetConfig", "adr": adr, "type": type})
+        data = self.request_cmd({"XC_FNC": "GetConfig", "adr": adr, "type": type})
         if data:
             return data
         else:
@@ -491,16 +434,34 @@ class SeleveHomeServer:
         """Get the configuration of a Commeo device by its RF address."""
         return self.get_config("CM", adr)
 
-    def send_command(self, device_id: str, cmd: str, value=None):
+    def send_command(self, device_id: str, cmd: str, value: int | None = None):
         """id = device sid"""
-        data: dict = {
+        data: dict[str, Any] = {  # pyright: ignore[reportExplicitAny]
             "XC_FNC": "SendGenericCmd",
             "id": device_id,
             "data": {
                 "cmd": cmd,
-            }
+            },
         }
         if value is not None:
             data["data"]["value"] = value
         response = self.request("POST", "/cmd", data)
         return response
+
+
+class UDPState(TypedDict):
+    """Represents the UDP state update for a device."""
+
+    state: dict[str, SelveRawCommeoDeviceState]
+    ts: float
+
+
+class DataStoreDict(TypedDict):
+    """TypedDict for data stored in hass.data."""
+
+    api: SeleveHomeServer
+    server_info: ServerInfo
+    devices: SelveStates | None
+    udp_last: dict[str, UDPState]
+    coordinator: DataUpdateCoordinator[SelveStates]
+    udp_task: Task[None] | None

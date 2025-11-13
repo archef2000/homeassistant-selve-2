@@ -3,6 +3,7 @@ DOMAIN = "selve"
 CONF_HOST = "host"
 CONF_PASSWORD = "password"
 CONF_NAME = "server_name"
+CONF_DISABLE_POLLING = "disable_polling"
 
 DATA_API = "api"
 DATA_SERVER_INFO = "server_info"

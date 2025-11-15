@@ -26,7 +26,6 @@ FLAG_TO_DEVICE_CLASS: dict[str, BinarySensorDeviceClass | None] = {
     "emergency_alarm": BinarySensorDeviceClass.SAFETY,
     "sensor_learned": None,
     "sensor_connected": BinarySensorDeviceClass.CONNECTIVITY,
-    "automatic_mode": None,
     "cc_timeout": None,
     "wind_alarm": BinarySensorDeviceClass.SAFETY,
     "rain_alarm": BinarySensorDeviceClass.SAFETY,

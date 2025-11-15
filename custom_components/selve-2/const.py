@@ -9,7 +9,7 @@ DATA_API = "api"
 DATA_SERVER_INFO = "server_info"
 DATA_DEVICES = "devices"
 
-PLATFORMS: list[str] = ["cover", "binary_sensor"]
+PLATFORMS: list[str] = ["cover", "binary_sensor", "switch"]
 
 DEFAULT_UPDATE_INTERVAL = 30  # seconds
 

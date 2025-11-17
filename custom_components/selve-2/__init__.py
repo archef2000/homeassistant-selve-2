@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .server import SelveState
 from typing import Any, cast
 
 from homeassistant import core
@@ -211,7 +212,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             sid = cast(str, j.get("sid"))
             if not sid:
                 continue
-            dev = coordinator.data.get(sid)
+            dev: SelveState | None = coordinator.data.get(sid)
             if not dev:
                 continue
 
@@ -219,6 +220,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             udp_state = j.get("state") or {}
             if changed_values is not None:
                 if len(changed_values) == 7:
+                    if "state" not in dev:
+                        continue
+                    dev_state = dev["state"]
+                    if not isinstance(dev_state, dict):
+                        continue
+                    last_run_state = dev_state.get("run_state")
+                    if last_run_state == 1:  # moving up
+                        # allow all changes
+                        continue
                     all_values = [
                         "overload",
                         "obstacle",

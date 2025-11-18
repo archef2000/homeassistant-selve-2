@@ -226,39 +226,42 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     if not isinstance(dev_state, dict):
                         continue
                     last_run_state = dev_state.get("run_state")
-                    if last_run_state == 1:  # moving up
-                        # allow all changes
-                        continue
-                    all_values = [
-                        "overload",
-                        "obstacle",
-                        "alarm",
-                        "position",
-                        "current",
-                        "target",
-                        "running_state",
-                    ]
-                    if set(changed_values) == set(
-                        all_values
-                    ):  # this is likely a wrong state
-                        run_state = cast(int | None, udp_state.get("run_state", None))
-                        position = cast(int | None, udp_state.get("position", None))
-                        current = cast(int | None, udp_state.get("current", None))
-                        target = cast(int | None, udp_state.get("target", None))
-                        timeout = cast(int | None, udp_state.get("timeout", None))
-                        if (
-                            run_state == 0
-                            and position == 0
-                            and current == 100
-                            and target == 100
-                            and timeout == 0
-                        ):
-                            _LOGGER.warning(
-                                "Selve UDP: ignoring likely wrong state for %s: %s",
-                                sid,
-                                udp_state,
+                    _LOGGER.error(
+                        "selve udp sid %s: last_run_state %s", sid, last_run_state
+                    )
+                    if last_run_state != 1:  # moving up
+                        all_values = [
+                            "overload",
+                            "obstacle",
+                            "alarm",
+                            "position",
+                            "current",
+                            "target",
+                            "running_state",
+                        ]
+                        if set(changed_values) == set(
+                            all_values
+                        ):  # this is likely a wrong state
+                            run_state = cast(
+                                int | None, udp_state.get("run_state", None)
                             )
-                            continue
+                            position = cast(int | None, udp_state.get("position", None))
+                            current = cast(int | None, udp_state.get("current", None))
+                            target = cast(int | None, udp_state.get("target", None))
+                            timeout = cast(int | None, udp_state.get("timeout", None))
+                            if (
+                                run_state == 0
+                                and position == 0
+                                and current == 100
+                                and target == 100
+                                and timeout == 0
+                            ):
+                                _LOGGER.warning(
+                                    "Selve UDP: ignoring likely wrong state for %s: %s",
+                                    sid,
+                                    udp_state,
+                                )
+                                continue
 
             # Normalize flags -> attributes for Commeo receivers so binary_sensors update from UDP
             if dev["type"] == "CM":

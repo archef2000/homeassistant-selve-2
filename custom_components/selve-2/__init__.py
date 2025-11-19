@@ -229,7 +229,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     _LOGGER.error(
                         "selve udp sid %s: last_run_state %s", sid, last_run_state
                     )
-                    if last_run_state != 1:  # moving up
+                    if last_run_state == 0:  # didn't move last update
                         all_values = [
                             "overload",
                             "obstacle",

@@ -12,5 +12,5 @@
   "requirements": [
     "ftfy==6.2.3"
   ],
-  "version": "1.1.4"
+  "version": "1.1.5"
 }

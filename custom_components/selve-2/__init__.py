@@ -185,9 +185,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.warning("UDP wait")
             try:
                 data, addr = await loop.sock_recvfrom(sock, 65535)  # pyright: ignore[reportAny]
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as err:
                 _LOGGER.error("UDP listener cancelled")
-                break
+                raise err
             except Exception as err:
                 _LOGGER.error("UDP recv error: %s", err)
                 await asyncio.sleep(0.1)
@@ -218,50 +218,44 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
             changed_values: list[str] | None = j.get("changed") or None
             udp_state = j.get("state") or {}
-            if changed_values is not None:
-                if len(changed_values) == 7:
-                    if "state" not in dev:
-                        continue
-                    dev_state = dev["state"]
-                    if not isinstance(dev_state, dict):
-                        continue
-                    last_run_state = dev_state.get("run_state")
-                    _LOGGER.error(
-                        "selve udp sid %s: last_run_state %s", sid, last_run_state
-                    )
-                    if last_run_state == 0:  # didn't move last update
-                        all_values = [
-                            "overload",
-                            "obstacle",
-                            "alarm",
-                            "position",
-                            "current",
-                            "target",
-                            "running_state",
-                        ]
-                        if set(changed_values) == set(
-                            all_values
-                        ):  # this is likely a wrong state
-                            run_state = cast(
-                                int | None, udp_state.get("run_state", None)
+            if changed_values is not None and len(changed_values) == 7:
+                if "state" not in dev:
+                    continue
+                dev_state = dev["state"]
+                if not isinstance(dev_state, dict):
+                    continue
+                last_run_state = dev_state.get("run_state")
+                if last_run_state == 0:  # didn't move last update
+                    all_values = [
+                        "overload",
+                        "obstacle",
+                        "alarm",
+                        "position",
+                        "current",
+                        "target",
+                        "running_state",
+                    ]
+                    if set(changed_values) == set(
+                        all_values
+                    ):  # this is likely a wrong state
+                        run_state = cast(int | None, udp_state.get("run_state", None))
+                        position = cast(int | None, udp_state.get("position", None))
+                        current = cast(int | None, udp_state.get("current", None))
+                        target = cast(int | None, udp_state.get("target", None))
+                        timeout = cast(int | None, udp_state.get("timeout", None))
+                        if (
+                            run_state == 0
+                            and position == 0
+                            and current == 100
+                            and target == 100
+                            and timeout == 0
+                        ):
+                            _LOGGER.warning(
+                                "Selve UDP: ignoring likely wrong state for %s: %s",
+                                sid,
+                                udp_state,
                             )
-                            position = cast(int | None, udp_state.get("position", None))
-                            current = cast(int | None, udp_state.get("current", None))
-                            target = cast(int | None, udp_state.get("target", None))
-                            timeout = cast(int | None, udp_state.get("timeout", None))
-                            if (
-                                run_state == 0
-                                and position == 0
-                                and current == 100
-                                and target == 100
-                                and timeout == 0
-                            ):
-                                _LOGGER.warning(
-                                    "Selve UDP: ignoring likely wrong state for %s: %s",
-                                    sid,
-                                    udp_state,
-                                )
-                                continue
+                            continue
 
             # Normalize flags -> attributes for Commeo receivers so binary_sensors update from UDP
             if dev["type"] == "CM":

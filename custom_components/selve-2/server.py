@@ -359,7 +359,7 @@ class SeleveHomeServer:
             data = cast(ServerInfo, response.json()["XC_SUC"])
             return {**data, "name": fix_mojibake(data.get("name", ""))}
         else:
-            raise Exception(
+            raise ValueError(
                 f"Failed to get server info: {response.status_code} {response.text}"
             )
 
@@ -370,7 +370,7 @@ class SeleveHomeServer:
         response = self.request("GET", url)
         if response.status_code == 200:
             if len(response.text) == 0:
-                raise Exception("Empty response")
+                raise ValueError("Empty response")
             try:
                 json_data = response.json()
             except Exception as e:
@@ -380,7 +380,7 @@ class SeleveHomeServer:
                 return None
             if "XC_SUC" in json_data:
                 return json_data["XC_SUC"]
-            raise Exception(
+            raise ValueError(
                 f'Failed to execute command: {response.status_code} "{response.text}"'
             )
 
@@ -416,9 +416,7 @@ class SeleveHomeServer:
                     .strip()
                 )
                 states[state["sid"]] = state
-            elif state["type"] == "EVENT":
-                pass
-            else:
+            elif state["type"] != "EVENT":
                 _LOGGER.debug("Unknown state type: %s raw=%s", state["type"], state)
         return states
 
